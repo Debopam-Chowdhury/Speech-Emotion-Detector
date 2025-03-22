@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Emotion Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-200 flex flex-col items-center justify-center min-h-screen">
+    <div class="bg-gray-800 p-6 rounded-lg shadow-lg w-96 text-center">
+        <h1 class="text-2xl font-bold mb-4 text-blue-400">🎙️ Speech Emotion Detector</h1>
+
+        <!-- Upload File -->
+        <form id="uploadForm" enctype="multipart/form-data" class="mb-4">
+            <input type="file" id="fileInput" accept="audio/wav" class="border border-gray-600 p-2 rounded w-full bg-gray-700 text-gray-200">
+            <button type="submit" class="mt-3 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500">
+                Upload & Predict
+            </button>
+        </form>
+
+        <hr class="my-4 border-gray-600">
+
+        <!-- Recording Controls -->
+        <div class="flex flex-col items-center space-y-3">
+            <button id="recordButton" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-500">
+                🎙 Start Recording
+            </button>
+            <button id="stopButton" disabled class="bg-red-600 text-white px-4 py-2 rounded opacity-50 cursor-not-allowed">
+                ⏹ Stop Recording
+            </button>
+            <audio id="audioPlayback" controls class="w-full mt-2 hidden bg-gray-700"></audio>
+        </div>
+
+        <hr class="my-4 border-gray-600">
+
+        <!-- Emotion Result -->
+        <h2 class="text-xl font-semibold text-blue-300 mt-4">Detected Emotion:</h2>
+        <p id="result" class="text-lg font-bold text-yellow-400">None</p>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+
+        document.getElementById("recordButton").addEventListener("click", async () => {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+                audioChunks = [];
+
+                const wavBlob = await convertWebMtoWAV(audioBlob);
+                const audioURL = URL.createObjectURL(wavBlob);
+                document.getElementById("audioPlayback").src = audioURL;
+                document.getElementById("audioPlayback").classList.remove("hidden");
+
+                const formData = new FormData();
+                formData.append("audio", wavBlob, "recording.wav");
+
+                fetch("/predict", { method: "POST", body: formData })
+                    .then(response => response.json())
+                    .then(data => document.getElementById("result").textContent = data.emotion || "Error detecting emotion")
+                    .catch(error => console.error("Error:", error));
+            };
+
+            mediaRecorder.start();
+            document.getElementById("recordButton").classList.add("opacity-50", "cursor-not-allowed");
+            document.getElementById("recordButton").disabled = true;
+            document.getElementById("stopButton").classList.remove("opacity-50", "cursor-not-allowed");
+            document.getElementById("stopButton").disabled = false;
+        });
+
+        document.getElementById("stopButton").addEventListener("click", () => {
+            mediaRecorder.stop();
+            document.getElementById("recordButton").classList.remove("opacity-50", "cursor-not-allowed");
+            document.getElementById("recordButton").disabled = false;
+            document.getElementById("stopButton").classList.add("opacity-50", "cursor-not-allowed");
+            document.getElementById("stopButton").disabled = true;
+        });
+
+        document.getElementById("uploadForm").addEventListener("submit", function (event) {
+            event.preventDefault();
+            const fileInput = document.getElementById("fileInput").files[0];
+            if (!fileInput) return alert("Please select an audio file");
+
+            const formData = new FormData();
+            formData.append("audio", fileInput);
+
+            fetch("/predict", { method: "POST", body: formData })
+                .then(response => response.json())
+                .then(data => document.getElementById("result").textContent = data.emotion || "Error detecting emotion")
+                .catch(error => console.error("Error:", error));
+        });
+
+        async function convertWebMtoWAV(webmBlob) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = function () {
+                    const audioContext = new AudioContext();
+                    audioContext.decodeAudioData(reader.result, function (buffer) {
+                        const wavBlob = encodeWAV(buffer);
+                        resolve(wavBlob);
+                    });
+                };
+                reader.readAsArrayBuffer(webmBlob);
+            });
+        }
+
+        function encodeWAV(audioBuffer) {
+            const numOfChan = audioBuffer.numberOfChannels;
+            const length = audioBuffer.length * numOfChan * 2 + 44;
+            const buffer = new ArrayBuffer(length);
+            const view = new DataView(buffer);
+            const channels = [];
+
+            let offset = 0;
+            function writeString(s) { for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i)); offset += s.length; }
+            function write32(value) { view.setUint32(offset, value, true); offset += 4; }
+            function write16(value) { view.setUint16(offset, value, true); offset += 2; }
+
+            writeString("RIFF"); write32(length - 8); writeString("WAVE");
+            writeString("fmt "); write32(16); write16(1); write16(numOfChan);
+            write32(audioBuffer.sampleRate); write32(audioBuffer.sampleRate * numOfChan * 2);
+            write16(numOfChan * 2); write16(16);
+            writeString("data"); write32(length - offset - 4);
+
+            for (let i = 0; i < numOfChan; i++) channels.push(audioBuffer.getChannelData(i));
+            for (let i = 0; i < audioBuffer.length; i++) {
+                for (let j = 0; j < numOfChan; j++) {
+                    const sample = Math.max(-1, Math.min(1, channels[j][i]));
+                    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                    offset += 2;
+                }
+            }
+            return new Blob([buffer], { type: "audio/wav" });
+        }
+    </script>
+</body>
+</html>
