@@ -6,3 +6,4 @@ joblib
 soundfile
 pydub
 imageio[ffmpeg]
+gunicorn
